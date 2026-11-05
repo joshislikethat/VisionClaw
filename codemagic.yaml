@@ -1,4 +1,3 @@
-
 workflows:
   visionclaw-ios:
     name: VisionClaw iOS Build
@@ -7,16 +6,30 @@ workflows:
     environment:
       xcode: latest
     scripts:
-      - name: Build iOS app
+      - name: Prepare app secrets
         script: |
           cp samples/CameraAccess/CameraAccess/Secrets.swift.example samples/CameraAccess/CameraAccess/Secrets.swift
+      - name: Build unsigned iOS app
+        script: |
+          set -e
           xcodebuild \
             -project samples/CameraAccess/CameraAccess.xcodeproj \
             -scheme CameraAccess \
             -sdk iphoneos \
-            -configuration Debug \
+            -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             build
+      - name: Package unsigned IPA
+        script: |
+          set -e
+          APP_PATH="build/Build/Products/Release-iphoneos/CameraAccess.app"
+          test -d "$APP_PATH"
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/CameraAccess.app
+          cd build/ipa
+          /usr/bin/zip -qry ../CameraAccess-unsigned.ipa Payload
     artifacts:
-      - build/Build/Products/Debug-iphoneos/*.app
+      - build/CameraAccess-unsigned.ipa
+      - build/Build/Products/Release-iphoneos/*.app
