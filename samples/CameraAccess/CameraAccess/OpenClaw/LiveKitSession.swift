@@ -81,6 +81,9 @@ final class LiveKitSession: NSObject, ObservableObject {
     super.init()
     room.add(delegate: self)
     AudioManager.shared.isSpeakerOutputPreferred = false
+    // The Meta HFP route and LiveKit's automatic AVAudioSession setup can race.
+    // Own the session so its category and Bluetooth route are stable before connect.
+    AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
   }
 
   var isActive: Bool { state == .connected || state == .connecting }
@@ -274,6 +277,7 @@ final class LiveKitSession: NSObject, ObservableObject {
         return
       }
 
+      try configureAudioSessionForCall()
       try await room.connect(url: ticket.url, token: ticket.token)
 
       guard generation == startGeneration else {
@@ -287,22 +291,11 @@ final class LiveKitSession: NSObject, ObservableObject {
 
       let diagSession = AVAudioSession.sharedInstance()
       NSLog(
-        "[Audio] inputs=[%@] output=[%@]",
+        "[Audio] inputs=[%@] input=[%@] output=[%@]",
         (diagSession.availableInputs ?? []).map { $0.portType.rawValue }.joined(separator: ","),
+        diagSession.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ","),
         diagSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
       )
-
-      if let hfp = diagSession.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
-        if diagSession.currentRoute.inputs.contains(where: { $0.portType == .bluetoothHFP }) {
-          NSLog("[Audio] glasses HFP already routed; leaving the route alone")
-        } else {
-          try? diagSession.setPreferredInput(hfp)
-          NSLog(
-            "[Audio] selected glasses HFP; output now [%@]",
-            diagSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-          )
-        }
-      }
 
       do {
         if usingGlassesSource {
@@ -354,6 +347,7 @@ final class LiveKitSession: NSObject, ObservableObject {
       state = .failed(error.localizedDescription)
       agentStatus = .none
       await room.disconnect()
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
       await startPreview()
     }
   }
@@ -444,12 +438,37 @@ final class LiveKitSession: NSObject, ObservableObject {
     }
   }
 
+  /// LiveKit's automatic AVAudioSession configuration can fail with -3001
+  /// when another audio route is active. Configure the session explicitly before
+  /// connecting, and select the glasses HFP input before the mic engine starts.
+  private func configureAudioSessionForCall() throws {
+    let session = AVAudioSession.sharedInstance()
+    let mode: AVAudioSession.Mode = usingGlassesSource ? .videoChat : .voiceChat
+    var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetooth]
+    if !usingGlassesSource {
+      options.insert(.defaultToSpeaker)
+    }
+
+    try session.setCategory(.playAndRecord, mode: mode, options: options)
+    try session.setActive(true)
+
+    if usingGlassesSource {
+      if let hfp = session.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
+        try session.setPreferredInput(hfp)
+        NSLog("[Audio] selected glasses HFP before LiveKit connect")
+      } else {
+        NSLog("[Audio] no glasses HFP input available before connect")
+      }
+    }
+  }
+
   func stop(failure: String? = nil) async {
     isStopping = true
     defer { isStopping = false }
 
     startGeneration &+= 1
     await room.disconnect()
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
     localVideoTrack = nil
     pendingGlassesTrack = nil
