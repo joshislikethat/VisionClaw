@@ -28,6 +28,7 @@ workflows:
           rm -rf build/ipa
           mkdir -p build/ipa/Payload
           cp -R "$APP_PATH" build/ipa/Payload/CameraAccess.app
+          chmod -R a+rX,u+w build/ipa/Payload/CameraAccess.app
           cd build/ipa
           /usr/bin/zip -qry ../CameraAccess-unsigned.ipa Payload
     artifacts:
